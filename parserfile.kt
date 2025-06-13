@@ -32,13 +32,13 @@ fun extractMaxLength(regexString: String): Int? {
 }
 
 private fun extractLookaheadMaxLength(pattern: String): Int? {
-    val lookaheadRegex = Regex("""\(\?=\^\.{(\d+),(\d+)}\$""")
-    val singleLenRegex = Regex("""\(\?=\^\.{(\d+)}\$""")
-    lookaheadRegex.find(pattern)?.let {
-        return it.groupValues[2].toIntOrNull()
-    }
-    singleLenRegex.find(pattern)?.let {
-        return it.groupValues[1].toIntOrNull()
-    }
-    return null
+    // Single comprehensive regex to match both range and single length patterns
+    val lookaheadRegex = Regex("""\(\?\=\^\.\{(\d+)(?:,(\d+))?\}\$""")
+    val match = lookaheadRegex.find(pattern)
+    
+    return if (match != null) {
+        // If group 2 exists (range pattern), use it; otherwise use group 1 (single length)
+        val maxLength = match.groupValues[2].takeIf { it.isNotEmpty() } ?: match.groupValues[1]
+        maxLength.toIntOrNull()
+    } else null
 }
