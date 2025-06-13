@@ -30,3 +30,15 @@ fun extractMaxLength(regexString: String): Int? {
     // Convert the extracted string to an integer. Returns null if the string is not a valid number.
     return maxLengthString.toIntOrNull()
 }
+
+private fun extractLookaheadMaxLength(pattern: String): Int? {
+    val lookaheadRegex = Regex("""\(\?=\^\.{(\d+),(\d+)}\$""")
+    val singleLenRegex = Regex("""\(\?=\^\.{(\d+)}\$""")
+    lookaheadRegex.find(pattern)?.let {
+        return it.groupValues[2].toIntOrNull()
+    }
+    singleLenRegex.find(pattern)?.let {
+        return it.groupValues[1].toIntOrNull()
+    }
+    return null
+}
