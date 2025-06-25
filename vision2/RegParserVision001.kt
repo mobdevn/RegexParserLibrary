@@ -1,8 +1,6 @@
-package com.barclays.mobilebanking.utils.regex
 
 import kotlin.math.max
 
-// --- Public Data Models ---
 data class LiteralDetail(val text: String, val position: Int)
 data class AnalysisResult(val maxLength: Int, val hasInfiniteLength: Boolean, val literals: List<LiteralDetail>, val literalOccurrences: Map<String, List<Int>>)
 data class TransformationResult(val formattedText: String, val newCursorPosition: Int)
@@ -32,7 +30,7 @@ class RegexInputFormatter(pattern: String) {
         val cleanInput = currentText.filter { it.isLetterOrDigit() }
         val prefix = getPrefix()
         if (cleanInput.isEmpty()) {
-            return TransformationResult(prefix, prefix.length) // First return for empty state
+            return TransformationResult(prefix, prefix.length)
         }
 
         val formatted = StringBuilder()
@@ -48,7 +46,7 @@ class RegexInputFormatter(pattern: String) {
                     inputCursor += charsToConsume
                 }
                 is RegexPatternParser.FormattingStep.Insert -> {
-                    if (inputCursor < cleanInput.length) {
+                    if (inputCursor < cleanInput.length || formatted.isEmpty()) { // Also insert prefix
                         formatted.append(step.literal)
                         literalOffset += step.literal.length
                     }
@@ -86,6 +84,7 @@ class RegexAnalyser(val pattern: String) {
 private object Constants {
     const val LENGTH_INFINITE = -1; const val NO_LENGTH_CONTRIBUTION = 0; const val SINGLE_CHAR_LENGTH = 1
     const val SINGLE_TOKEN_CONSUMED_LENGTH = 1; const val ESCAPED_TOKEN_CONSUMED_LENGTH = 2
+    const val CAPTURED_GROUP_OFFSET = 1
     object Chars {
         const val GROUP_START = '('; const val GROUP_END = ')'; const val CLASS_START = '['; const val CLASS_END = ']'
         const val QUANTIFIER_START = '{'; const val QUANTIFIER_END = '}'; const val ALTERNATION = '|'
@@ -95,7 +94,7 @@ private object Constants {
 
 private object RegexPatternParser {
     data class BranchState(var maxLength: Int = 0, var hasInfinite: Boolean = false, val literals: MutableList<LiteralDetail> = mutableListOf())
-    data class QuantifierParseResult(val totalLength: Int, val isInfinite: Boolean)
+    data class QuantifierParseResult(val totalLength: Int, val isInfinite: Boolean, val charsConsumed: Int)
     sealed class FormattingStep {
         data class Consume(val length: Int) : FormattingStep()
         data class Insert(val literal: String) : FormattingStep()
@@ -125,30 +124,32 @@ private object RegexPatternParser {
                 Constants.Chars.ANCHOR_START, Constants.Chars.ANCHOR_END -> { cursor++; advanced = true }
                 Constants.Chars.GROUP_START -> {
                     val end = RegexStringUtils.findClosingParen(patternToFormat, cursor)
-                    steps.addAll(buildFormattingSteps(patternToFormat.substring(cursor + 1, end)))
-                    cursor = end + 1; advanced = true
+                    val groupContent = patternToFormat.substring(cursor + 1, end)
+                    if (isGroupPurelyLiteral(groupContent)) {
+                        steps.add(FormattingStep.Insert(groupContent))
+                    } else {
+                        steps.addAll(buildFormattingSteps(groupContent))
+                    }
+                    cursor = end + 1
+                    advanced = true
                 }
                 Constants.Chars.CLASS_START, Constants.Chars.ESCAPE, Constants.Chars.WILDCARD -> {
                     val (baseLength, nextIndex) = getConsumingTokenLength(patternToFormat, cursor)
                     val quantifierResult = parseAndApplyQuantifier(patternToFormat, nextIndex, baseLength)
                     if (quantifierResult.isInfinite || quantifierResult.totalLength < 0) return emptyList()
                     if (quantifierResult.totalLength > 0) steps.add(FormattingStep.Consume(quantifierResult.totalLength))
-                    
-                    // Correctly advance cursor past the quantifier
-                    var tempCursor = nextIndex
-                    if (patternToFormat.getOrNull(tempCursor) == '{') {
-                        tempCursor = patternToFormat.indexOf('}', tempCursor) + 1
-                    } else if (patternToFormat.getOrNull(tempCursor) in "*+?") {
-                        tempCursor++
-                    }
-                    cursor = tempCursor
-
+                    cursor = nextIndex + quantifierResult.charsConsumed
                     advanced = true
                 }
             }
             if (!advanced) { if ("*+?{}".indexOf(char) == -1) steps.add(FormattingStep.Insert(char.toString())); cursor++ }
         }
         return steps
+    }
+    
+    private fun isGroupPurelyLiteral(groupContent: String): Boolean {
+        // A group is literal if it doesn't contain tokens that consume input.
+        return !groupContent.any { it in "[]\\." || it == 'd' || it == 'w' || it == 's' }
     }
 
     private fun extractLookaheadLengthConstraint(pattern: String): Pair<Int?, String> {
@@ -167,21 +168,22 @@ private object RegexPatternParser {
     
     private fun parseAndApplyQuantifier(pattern: String, index: Int, baseLength: Int): QuantifierParseResult {
         return when (pattern.getOrNull(index)) {
-            '*', '+' -> QuantifierParseResult(Constants.NO_LENGTH_CONTRIBUTION, true)
-            '?' -> QuantifierParseResult(baseLength, false)
+            '*', '+' -> QuantifierParseResult(Constants.NO_LENGTH_CONTRIBUTION, true, Constants.SINGLE_TOKEN_CONSUMED_LENGTH)
+            '?' -> QuantifierParseResult(baseLength, false, Constants.SINGLE_TOKEN_CONSUMED_LENGTH)
             '{' -> {
                 val end = pattern.indexOf(Constants.Chars.QUANTIFIER_END, index)
-                if (end == -1) return QuantifierParseResult(baseLength, false)
+                if (end == -1) return QuantifierParseResult(baseLength, false, 0)
+                val consumed = end - index + 1
                 val parts = pattern.substring(index + 1, end).split(',')
                 try {
                     when {
-                        parts.size == 1 -> QuantifierParseResult(baseLength * parts[0].toInt(), false)
-                        parts[1].trim().isEmpty() -> QuantifierParseResult(Constants.NO_LENGTH_CONTRIBUTION, true)
-                        else -> QuantifierParseResult(baseLength * parts[1].toInt(), false)
+                        parts.size == 1 -> QuantifierParseResult(baseLength * parts[0].toInt(), false, consumed)
+                        parts[1].trim().isEmpty() -> QuantifierParseResult(Constants.NO_LENGTH_CONTRIBUTION, true, consumed)
+                        else -> QuantifierParseResult(baseLength * parts[1].toInt(), false, consumed)
                     }
-                } catch (e: NumberFormatException) { QuantifierParseResult(baseLength, false) }
+                } catch (e: NumberFormatException) { QuantifierParseResult(baseLength, false, 0) }
             }
-            else -> QuantifierParseResult(baseLength, false)
+            else -> QuantifierParseResult(baseLength, false, 0)
         }
     }
 
@@ -191,38 +193,25 @@ private object RegexPatternParser {
 
     private fun processNextToken(pattern: String, index: Int, state: BranchState): Int {
         val char = pattern[index]
-        if ("*+?{}".indexOf(char) != -1) return index + 1 // Skip quantifiers
+        if ("*+?{}".indexOf(char) != -1) return index + 1
         
         val (baseLength, nextIndex) = getConsumingTokenLength(pattern, index)
         val quantifier = parseAndApplyQuantifier(pattern, nextIndex, baseLength)
         
         if (quantifier.isInfinite) state.hasInfinite = true else state.maxLength += quantifier.totalLength
         
-        // Literal handling for analysis
         if (char !in "()[]\\.") {
-            // Find all literals, even inside groups. This is a simple approximation.
-            pattern.substring(index, nextIndex).forEachIndexed { i, c ->
-                 if (c !in "()[]\\.") {
-                     state.literals.add(LiteralDetail(c.toString(), index + i))
-                 }
-            }
+            state.literals.add(LiteralDetail(char.toString(), index))
         }
         
-        // Correctly advance cursor past token AND its potential quantifier
-        var tempCursor = nextIndex
-        if (pattern.getOrNull(tempCursor) == '{') {
-            tempCursor = pattern.indexOf('}', tempCursor) + 1
-        } else if (pattern.getOrNull(tempCursor) in "*+?") {
-            tempCursor++
-        }
-        return tempCursor
+        return nextIndex + quantifier.charsConsumed
     }
     
     private fun buildLiteralOccurrencesMap(literals: List<LiteralDetail>): Map<String, List<Int>> = literals.groupBy({ it.text }, { it.position })
 }
 
 private object RegexStringUtils {
-    fun splitTopLevelAlternations(pattern: String): List<String> {
+    fun splitTopLevelAlternations(pattern: String): List<String> { 
         val branches=mutableListOf<String>();val current=StringBuilder();var parenDepth=0;var inCharClass=false;var inEscape=false;pattern.forEach{char->if(inEscape){current.append(char);inEscape=false;return@forEach}
         when(char){Constants.Chars.ESCAPE->inEscape=true;Constants.Chars.CLASS_START->if(parenDepth==0)inCharClass=true;Constants.Chars.CLASS_END->if(parenDepth==0)inCharClass=false;Constants.Chars.GROUP_START->if(!inCharClass)parenDepth++;Constants.Chars.GROUP_END->if(!inCharClass&&parenDepth>0)parenDepth--;Constants.Chars.ALTERNATION->if(parenDepth==0&&!inCharClass){branches.add(current.toString());current.clear();return@forEach}
         else->current.append(char)}};branches.add(current.toString());return branches
