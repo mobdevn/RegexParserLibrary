@@ -14,7 +14,7 @@
  * All classes are immutable after construction and thread-safe for concurrent read operations.
  *
  * @author Generated Kotlin Regex Utility
- * @version 3.4.0
+ * @version 3.4.1
  * @since 1.0.0
  */
 
@@ -135,7 +135,7 @@ class RegexParser(private val pattern: String) {
         position = contentEnd + 1 // Move position past the lookahead
 
         // Check if it's a length-constraining lookahead
-        val lengthRegex = Regex("^\\.{(\\d+),(\\d+)}\\$$")
+        val lengthRegex = Regex("^\\.\\\{(\\d+),(\\d+)\\\}\$")
         val match = lengthRegex.find(content)
         if (match != null) {
             val min = match.groupValues[1].toIntOrNull()
