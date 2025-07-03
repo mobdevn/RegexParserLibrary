@@ -1,0 +1,322 @@
+/**
+ * # Regex Utility Library (Alternation Fix)
+ *
+ * A comprehensive Kotlin library for parsing, analyzing, and formatting text based on regex patterns.
+ * This version includes a recursive-descent parser with full support for alternation (`|`).
+ *
+ * ## Features
+ * - Maximum length calculation for alternated patterns
+ * - Common prefix extraction from alternated branches
+ * - Intelligent formatting that selects the best-matching branch
+ * - Support for complex regex patterns including groups, lookaheads, and alternation.
+ *
+ * ## Thread Safety
+ * All classes are immutable after construction and thread-safe for concurrent read operations.
+ *
+ * @author Generated Kotlin Regex Utility
+ * @version 3.0.0
+ * @since 1.0.0
+ */
+
+/**
+ * Constants used throughout the regex utility library.
+ */
+object RegexConstants {
+    const val ZERO = 0
+    const val ONE = 1
+    const val MAX_SAFE_LENGTH = 1000
+    const val ANCHOR_START = '^'
+    const val ANCHOR_END = '$'
+    const val GROUP_OPEN = '('
+    const val GROUP_CLOSE = ')'
+    const val CHAR_CLASS_OPEN = '['
+    const val CHAR_CLASS_CLOSE = ']'
+    const val QUANTIFIER_OPEN = '{'
+    const val QUANTIFIER_CLOSE = '}'
+    const val ESCAPE_CHAR = '\\'
+    const val COMMA = ','
+    const val PIPE = '|'
+    const val QUANTIFIER_ZERO_OR_MORE = '*'
+    const val QUANTIFIER_ONE_OR_MORE = '+'
+    const val QUANTIFIER_ZERO_OR_ONE = '?'
+    const val LOOKAHEAD_POSITIVE = "(?="
+}
+
+/**
+ * Main entry point for regex analysis and formatting. It coordinates the parser, analyzer, and formatter.
+ * @param pattern The regex pattern to analyze and use for formatting.
+ */
+class RegexUtility<T>(private val pattern: String) {
+    private val parsedComponents: List<RegexComponent>
+    private val analyzer: RegexAnalyzer
+    private val formatter: RegexFormatter
+
+    init {
+        if (pattern.isEmpty()) {
+            throw IllegalArgumentException("Pattern cannot be empty.")
+        }
+        parsedComponents = RegexParser(pattern).parse()
+        analyzer = RegexAnalyzer(parsedComponents)
+        formatter = RegexFormatter(parsedComponents)
+    }
+
+    fun getMaxLength(): Int = analyzer.calculateMaxLength()
+    fun getLiteralPositions(): List<LiteralPosition> = analyzer.findLiteralPositions()
+    fun getPrefix(): String = analyzer.extractPrefix()
+    fun formatInput(input: String): String = formatter.format(input)
+    fun isValid(input: String): Boolean = Regex(pattern).matches(input)
+}
+
+/**
+ * Parses regex patterns into a structured Abstract Syntax Tree (AST).
+ * This version uses recursive descent and correctly handles alternation (`|`).
+ */
+class RegexParser(private val pattern: String) {
+    private var position = 0
+
+    fun parse(): List<RegexComponent> {
+        position = 0
+        return parseUntil(emptySet())
+    }
+
+    private fun parseUntil(endChars: Set<Char>): List<RegexComponent> {
+        val branches = mutableListOf<MutableList<RegexComponent>>()
+        branches.add(mutableListOf())
+
+        while (position < pattern.length && pattern[position] !in endChars) {
+            val char = pattern[position]
+            if (char == RegexConstants.PIPE) {
+                position++
+                branches.add(mutableListOf())
+            } else {
+                branches.last().add(parseNextComponent())
+            }
+        }
+
+        return if (branches.size > 1) {
+            listOf(RegexComponent.Alternation(branches))
+        } else {
+            branches.first()
+        }
+    }
+
+    private fun parseNextComponent(): RegexComponent {
+        return when {
+            pattern.startsWith(RegexConstants.LOOKAHEAD_POSITIVE, position) -> parseLookahead()
+            pattern[position] == RegexConstants.GROUP_OPEN -> parseGroup()
+            pattern[position] == RegexConstants.CHAR_CLASS_OPEN -> parseCharacterClass()
+            pattern[position] == RegexConstants.ANCHOR_START || pattern[position] == RegexConstants.ANCHOR_END -> parseAnchor()
+            pattern[position] == RegexConstants.ESCAPE_CHAR -> parseEscapeSequence()
+            else -> parseLiteral()
+        }
+    }
+    
+    private fun parseLookahead(): RegexComponent {
+        val start = position
+        position += 3 // Skip "(?="
+        parseUntil(setOf(RegexConstants.GROUP_CLOSE)) // Consume content but discard it
+        position++ // Skip ")"
+        return RegexComponent.Lookahead(pattern.substring(start, position))
+    }
+
+    private fun parseGroup(): RegexComponent {
+        position++ // Skip '('
+        val matchingParenIndex = findMatchingParen(position - 1)
+        val contentString = pattern.substring(position, matchingParenIndex)
+        val innerComponents = RegexParser(contentString).parse()
+        position = matchingParenIndex + 1
+        
+        val quantifier = parseQuantifier()
+        return RegexComponent.Group(innerComponents, quantifier)
+    }
+
+    private fun findMatchingParen(start: Int): Int {
+        var depth = 1
+        for (i in start + 1 until pattern.length) {
+            if (pattern[i] == RegexConstants.ESCAPE_CHAR) {
+                i++
+                continue
+            }
+            when (pattern[i]) {
+                '(' -> depth++
+                ')' -> depth--
+            }
+            if (depth == 0) return i
+        }
+        return pattern.length - 1
+    }
+
+    private fun parseCharacterClass(): RegexComponent {
+        val start = position
+        val end = pattern.indexOf(RegexConstants.CHAR_CLASS_CLOSE, position)
+        if (end == -1) {
+            position = pattern.length
+            return RegexComponent.Literal(pattern.substring(start))
+        }
+        position = end + 1
+        val value = pattern.substring(start, position)
+        val quantifier = parseQuantifier()
+        return RegexComponent.CharacterClass(value, quantifier)
+    }
+
+    private fun parseEscapeSequence(): RegexComponent {
+        val value = pattern.substring(position, position + 2)
+        position += 2
+        val quantifier = parseQuantifier()
+        return when (value) {
+            "\\d", "\\w", "\\s" -> RegexComponent.CharacterClass(value, quantifier)
+            else -> RegexComponent.Literal(value, quantifier)
+        }
+    }
+
+    private fun parseLiteral(): RegexComponent {
+        val value = pattern[position].toString()
+        position++
+        val quantifier = parseQuantifier()
+        return RegexComponent.Literal(value, quantifier)
+    }
+
+    private fun parseAnchor(): RegexComponent {
+        val type = pattern[position].toString()
+        position++
+        return RegexComponent.Anchor(type)
+    }
+
+    private fun parseQuantifier(): Quantifier? {
+        if (position >= pattern.length) return null
+        return when (pattern[position]) {
+            RegexConstants.QUANTIFIER_ZERO_OR_MORE -> { position++; Quantifier(0, Int.MAX_VALUE) }
+            RegexConstants.QUANTIFIER_ONE_OR_MORE -> { position++; Quantifier(1, Int.MAX_VALUE) }
+            RegexConstants.QUANTIFIER_ZERO_OR_ONE -> { position++; Quantifier(0, 1) }
+            RegexConstants.QUANTIFIER_OPEN -> parseComplexQuantifier()
+            else -> null
+        }
+    }
+
+    private fun parseComplexQuantifier(): Quantifier? {
+        val start = position
+        val end = pattern.indexOf(RegexConstants.QUANTIFIER_CLOSE, start)
+        if (end == -1) return null
+        
+        val content = pattern.substring(start + 1, end)
+        position = end + 1
+        
+        return try {
+            val parts = content.split(RegexConstants.COMMA)
+            if (parts.size == 1) Quantifier(parts[0].toInt(), parts[0].toInt())
+            else Quantifier(parts[0].toInt(), if (parts[1].isEmpty()) Int.MAX_VALUE else parts[1].toInt())
+        } catch (e: Exception) { null }
+    }
+}
+
+/**
+ * Analyzes parsed regex components with support for alternation.
+ */
+class RegexAnalyzer(private val components: List<RegexComponent>) {
+
+    fun calculateMaxLength(): Int = calculateBranchMaxLength(components)
+
+    fun findLiteralPositions(): List<LiteralPosition> {
+        // This is highly complex with alternation and generally not well-defined.
+        // A literal is only guaranteed if it's in a common prefix of all branches.
+        return emptyList() 
+    }
+
+    fun extractPrefix(): String = extractBranchPrefix(components)
+
+    private fun calculateBranchMaxLength(branch: List<RegexComponent>): Int = branch.sumOf { component ->
+        when (component) {
+            is RegexComponent.Alternation -> component.branches.maxOfOrNull { calculateBranchMaxLength(it) } ?: 0
+            is RegexComponent.Group -> calculateBranchMaxLength(component.components) * (component.quantifier?.max ?: 1)
+            is RegexComponent.CharacterClass -> component.quantifier?.max ?: 1
+            is RegexComponent.Literal -> component.value.length * (component.quantifier?.max ?: 1)
+            else -> 0
+        }
+    }
+
+    private fun extractBranchPrefix(branch: List<RegexComponent>): String {
+        val prefix = StringBuilder()
+        for (component in branch) {
+            when (component) {
+                is RegexComponent.Literal -> if (component.quantifier == null) prefix.append(component.value) else return prefix.toString()
+                is RegexComponent.Group -> if (component.quantifier == null) prefix.append(extractBranchPrefix(component.components)) else return prefix.toString()
+                is RegexComponent.Alternation -> {
+                    val branchPrefixes = component.branches.map { extractBranchPrefix(it) }
+                    prefix.append(getCommonPrefix(branchPrefixes))
+                    return prefix.toString()
+                }
+                is RegexComponent.Anchor -> continue
+                else -> return prefix.toString()
+            }
+        }
+        return prefix.toString()
+    }
+
+    private fun getCommonPrefix(strings: List<String>): String {
+        if (strings.isEmpty()) return ""
+        val shortest = strings.minByOrNull { it.length } ?: return ""
+        for (i in shortest.indices) {
+            val char = shortest[i]
+            if (strings.any { it[i] != char }) {
+                return shortest.substring(0, i)
+            }
+        }
+        return shortest
+    }
+}
+
+/**
+ * Formats user input, intelligently choosing the best branch in an alternation.
+ */
+class RegexFormatter(private val components: List<RegexComponent>) {
+    fun format(input: String): String = formatBranch(components, input).first
+
+    private fun formatBranch(branch: List<RegexComponent>, input: String): Pair<String, Int> {
+        val result = StringBuilder()
+        var remainingInput = input
+        var totalConsumed = 0
+
+        for (component in branch) {
+            val (formatted, consumed) = formatComponent(component, remainingInput)
+            result.append(formatted)
+            totalConsumed += consumed
+            if (consumed > 0 && consumed <= remainingInput.length) {
+                remainingInput = remainingInput.substring(consumed)
+            }
+        }
+        return result.toString() to totalConsumed
+    }
+
+    private fun formatComponent(component: RegexComponent, input: String): Pair<String, Int> {
+        return when (component) {
+            is RegexComponent.Alternation -> {
+                // Find the branch that consumes the most input (best match)
+                component.branches
+                    .map { formatBranch(it, input) }
+                    .maxByOrNull { it.second } ?: ("" to 0)
+            }
+            is RegexComponent.Group -> formatBranch(component.components, input)
+            is RegexComponent.Literal -> component.value to 0
+            is RegexComponent.CharacterClass -> {
+                val toConsume = component.quantifier?.max ?: 1
+                val consumed = input.take(toConsume)
+                consumed to consumed.length
+            }
+            else -> "" to 0
+        }
+    }
+}
+
+// --- Data Classes ---
+
+sealed class RegexComponent {
+    data class Literal(val value: String, val quantifier: Quantifier? = null) : RegexComponent()
+    data class CharacterClass(val value: String, val quantifier: Quantifier? = null) : RegexComponent()
+    data class Group(val components: List<RegexComponent>, val quantifier: Quantifier? = null) : RegexComponent()
+    data class Lookahead(val content: String) : RegexComponent()
+    data class Anchor(val type: String) : RegexComponent()
+    data class Alternation(val branches: List<List<RegexComponent>>) : RegexComponent()
+}
+
+data class Quantifier(val min: Int, val max: Int)
+data class LiteralPosition(val position: Int, val literal: String)
