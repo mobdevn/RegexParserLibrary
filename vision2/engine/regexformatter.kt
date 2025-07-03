@@ -1,6 +1,3 @@
-// com/yourcompany/regexformatter/RegexFormatter.kt
-package com.yourcompany.regexformatter
-
 import kotlin.math.max
 
 /**
@@ -165,7 +162,9 @@ class RegexFormatter(private val pattern: String) {
         if (isGroup && token.contains(ALTERNATION_CHAR)) {
             val innerContent = token.removeSurrounding(CHAR_GROUP_START.toString(), CHAR_GROUP_END.toString())
             var maxLength = 0L
-            innerContent.split(ALTERNATION_CHAR).forEach { alt ->
+
+            // Use the new, robust splitter instead of the naive split('|')
+            splitOnTopLevelAlternation(innerContent).forEach { alt ->
                 val altLength = RegexFormatter(alt).getMaxLength()
                 if (altLength == INFINITE_LENGTH) return RegexPart.Placeholder(-1, token)
                 maxLength = max(maxLength, altLength)
@@ -188,6 +187,26 @@ class RegexFormatter(private val pattern: String) {
         }
         return RegexPart.Placeholder(1, token)
     }
+    
+    private fun splitOnTopLevelAlternation(input: String): List<String> {
+        val parts = mutableListOf<String>()
+        var balance = 0
+        var lastSplitIndex = 0
+        input.forEachIndexed { i, char ->
+            when (char) {
+                CHAR_GROUP_START -> balance++
+                CHAR_GROUP_END -> balance--
+                ALTERNATION_CHAR -> {
+                    if (balance == 0) {
+                        parts.add(input.substring(lastSplitIndex, i))
+                        lastSplitIndex = i + 1
+                    }
+                }
+            }
+        }
+        parts.add(input.substring(lastSplitIndex))
+        return parts
+    }
 
     private fun findNextToken(startIndex: Int): Int {
         return when (pattern.getOrNull(startIndex)) {
@@ -209,16 +228,24 @@ class RegexFormatter(private val pattern: String) {
     }
 
     private fun findGroupEnd(startIndex: Int): Int {
-        var balance = 0
-        for (i in startIndex until pattern.length) {
-            if (pattern[i] == ESCAPE_CHAR) {
-                i++
-                continue
+        var balance = 1 // Start with 1 to account for the opening parenthesis at startIndex
+        var i = startIndex + 1 // Start checking from the character after the opening parenthesis
+
+        while (i < pattern.length) {
+            when (pattern[i]) {
+                ESCAPE_CHAR -> {
+                    i += 2 // Skip both the escape character and the character it escapes
+                    continue
+                }
+                CHAR_GROUP_START -> balance++
+                CHAR_GROUP_END -> balance--
             }
-            if (pattern[i] == CHAR_GROUP_START) balance++
-            if (pattern[i] == CHAR_GROUP_END) balance--
-            if (balance == 0) return i
+
+            if (balance == 0) {
+                return i // Found the matching closing parenthesis
+            }
+            i++
         }
-        return pattern.length - 1
+        return pattern.length - 1 // Fallback if no closing parenthesis is found
     }
 }
